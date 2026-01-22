@@ -1,4 +1,4 @@
-name: Build Xray (Latest Source & Logging)
+name: Build Xray (Fix Include Path)
 
 on:
   schedule:
@@ -10,38 +10,33 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
+      commit_sha: ${{ steps.check.outputs.commit_sha }}
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
-      - name: 🔍 Check Versions
+      - name: 🔍 Check Latest Stable Release
         id: check
         run: |
-          echo "::group::Fetching Upstream Version"
-          # 1. Get Upstream Xray Version from XTLS/Xray-core
-          UPSTREAM_TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
-          UPSTREAM_VER=${UPSTREAM_TAG#v} # Remove 'v' prefix
-          echo "✅ Found Upstream Xray-core: v$UPSTREAM_VER"
+          echo "::group::Fetching Upstream Data"
+          RELEASE_JSON=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+          UPSTREAM_TAG=$(echo "$RELEASE_JSON" | jq -r .tag_name)
+          COMMIT_SHA=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/git/ref/tags/${UPSTREAM_TAG}" | jq -r .object.sha)
+          UPSTREAM_VER=${UPSTREAM_TAG#v}
+          
+          echo "✅ Latest Stable Tag: $UPSTREAM_TAG"
           echo "::endgroup::"
           
-          echo "::group::Fetching Local Release"
-          # 2. Get Local Release Version (if exists)
+          echo "::group::Checking Local Release"
           LOCAL_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r .tag_name || echo "v0.0.0")
           LOCAL_VER=${LOCAL_TAG#v}
-          echo "ℹ️  Found Local Release: v$LOCAL_VER"
+          echo "ℹ️  Local Version: $LOCAL_VER"
           echo "::endgroup::"
 
-          # 3. Compare and Decide
-          echo "----------------------------------------"
-          echo "  Upstream : $UPSTREAM_VER"
-          echo "  Local    : $LOCAL_VER"
-          echo "----------------------------------------"
-
           if [ "$UPSTREAM_VER" != "$LOCAL_VER" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "🚀 Update required! Starting build pipeline..."
             echo "should_run=true" >> $GITHUB_OUTPUT
             echo "version=$UPSTREAM_VER" >> $GITHUB_OUTPUT
+            echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
           else
-            echo "💤 Versions match. No build needed."
             echo "should_run=false" >> $GITHUB_OUTPUT
           fi
 
@@ -54,72 +49,65 @@ jobs:
       matrix:
         arch:
           - x86_64
-         # - aarch64_generic
-        #  - mipsel_24kc
-         # - arm_cortex-a7_neon-vfpv4
+          - aarch64_generic
+          - mipsel_24kc
+          - arm_cortex-a7_neon-vfpv4
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 🛠️ Prepare & Patch Source
+      - name: 🛠️ Patch Source Code
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
+          SHA="${{ needs.check-version.outputs.commit_sha }}"
           
-          echo "::group::Cloning OpenWrt Package Source"
-          # Clone strictly the net/xray-core package
+          echo "::group::Cloning Official Makefile"
           git clone --depth 1 --filter=blob:none --sparse https://github.com/openwrt/packages.git openwrt-packages
           cd openwrt-packages
           git sparse-checkout set net/xray-core
           
-          # Move to a clean build directory
           mkdir -p ../xray-core
           cp -r net/xray-core/* ../xray-core/
           cd ..
           rm -rf openwrt-packages
-          echo "✅ Official Makefile retrieved."
           echo "::endgroup::"
 
-          echo "::group::Calculating New Hash"
-          # Download the NEW source code to get the correct SHA256
+          echo "::group::Downloading Source Hash"
           URL="https://codeload.github.com/XTLS/Xray-core/tar.gz/v${VERSION}"
-          echo "⬇️ Downloading source for v$VERSION from: $URL"
-          
+          echo "⬇️  Downloading source from: $URL"
           FILE_HASH=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
-          echo "✅ Calculated Hash: $FILE_HASH"
           echo "::endgroup::"
-
-          echo "::group::Patching Makefile"
-          echo "Old Makefile Configuration:"
-          grep -E "PKG_VERSION:=|PKG_HASH:=" xray-core/Makefile
           
-          # Force the new Version and Hash into the Makefile
+          echo "::group::Applying Patches"
+          
+          # 1. Update Version and Hash
           sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VERSION/" xray-core/Makefile
           sed -i "s/^PKG_HASH:=.*/PKG_HASH:=$FILE_HASH/" xray-core/Makefile
           sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=1/" xray-core/Makefile
-          
-          echo "----------------------------------------"
-          echo "New Makefile Configuration (Verified):"
-          grep -E "PKG_VERSION:=|PKG_HASH:=" xray-core/Makefile
-          echo "----------------------------------------"
+
+          # 2. FIX THE INCLUDE PATH (The Critical Fix)
+          # Replaces relative path "../../lang/golang/..." with absolute SDK path "$(TOPDIR)/feeds/packages/lang/golang/..."
+          sed -i "s|\.\./\.\./lang/golang/golang-package.mk|\$(TOPDIR)/feeds/packages/lang/golang/golang-package.mk|" xray-core/Makefile
+
+          echo "✅ Makefile updated."
+          grep "include" xray-core/Makefile
           echo "::endgroup::"
 
-      - name: 🏗️ Build IPK (OpenWrt SDK)
+      - name: 🏗️ Build IPK
         uses: openwrt/gh-action-sdk@v7
         env:
           ARCH: ${{ matrix.arch }}
           FEEDNAME: custom
           PACKAGES: xray-core
-          NO_SHFMT_CHECK: 1 # Skip formatting checks since we edited the file
+          NO_SHFMT_CHECK: 1
         with:
           feed_dir: .
 
-      - name: 📦 Organize Artifacts
+      - name: 📦 Move Artifacts
         run: |
           mkdir -p output
           find bin/packages -name "xray-core*.ipk" -exec mv {} output/ \;
-          echo "Generated IPK files:"
-          ls -lh output/
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -145,12 +133,12 @@ jobs:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: Xray-core v${{ needs.check-version.outputs.version }}
           body: |
-            ### 🚀 Automated Build
+            ### 🚀 Stable Build
             
-            **Source Version:** `v${{ needs.check-version.outputs.version }}`
-            **Upstream Repo:** [XTLS/Xray-core](https://github.com/XTLS/Xray-core)
+            **Version:** `v${{ needs.check-version.outputs.version }}`
+            **Commit SHA:** `${{ needs.check-version.outputs.commit_sha }}`
             
-            This release was built using the official OpenWrt package definitions but patched to use the latest source code available.
+            Automated build from stable release.
           files: artifacts/*.ipk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
