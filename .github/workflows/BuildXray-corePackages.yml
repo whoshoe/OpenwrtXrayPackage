@@ -1,20 +1,17 @@
 name: Build Xray-core for OpenWrt 24.10
 
 on:
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0' # Optional: Runs weekly
+    - cron: '0 0 * * 0'
 
 env:
-  # OpenWrt Configuration
   SDK_URL: "https://downloads.openwrt.org/releases/24.10.5/targets/x86/64/openwrt-sdk-24.10.5-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-  TARGET_ARCH: "x86_64" # Change this to match the SDK URL architecture (e.g., aarch64_generic)
-  
-  # Upstream Repo
+  TARGET_ARCH: "x86_64"
   UPSTREAM_REPO: "XTLS/Xray-core"
 
 permissions:
-  contents: write  # Required for creating releases
+  contents: write
 
 jobs:
   build:
@@ -22,6 +19,12 @@ jobs:
     steps:
       - name: Checkout Helper
         uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
+          zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 file
 
       # --- LOGIC STEP 1: Find Version & Checkout Code ---
       - name: Resolve Latest Xray Version
@@ -31,7 +34,6 @@ jobs:
         run: |
           echo "Fetching latest release from $UPSTREAM_REPO..."
           
-          # FIXED COMMAND: Use JSON to get the strict tag name
           LATEST_TAG=$(gh release list \
             --repo $UPSTREAM_REPO \
             --exclude-drafts \
@@ -47,36 +49,15 @@ jobs:
 
           echo "Latest Tag found: $LATEST_TAG"
           
-          # 2. Clone and checkout specifically to find the commit hash
           git clone https://github.com/$UPSTREAM_REPO.git upstream-src
           cd upstream-src
           git checkout $LATEST_TAG
           
-          # 3. Get the commit hash
           COMMIT_HASH=$(git rev-parse HEAD)
           echo "Commit Hash: $COMMIT_HASH"
           
-          # Clean version (remove 'v' prefix if present for OpenWrt Makefile)
           CLEAN_VER=${LATEST_TAG#v}
           
-          # Export variables for next steps
-          echo "version=$CLEAN_VER" >> $GITHUB_OUTPUT
-          echo "commit=$COMMIT_HASH" >> $GITHUB_OUTPUT
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-          
-          # 2. Clone and checkout specifically to find the commit hash (as requested)
-          git clone https://github.com/$UPSTREAM_REPO.git upstream-src
-          cd upstream-src
-          git checkout $LATEST_TAG
-          
-          # 3. Get the commit hash
-          COMMIT_HASH=$(git rev-parse HEAD)
-          echo "Commit Hash: $COMMIT_HASH"
-          
-          # Clean version (remove 'v' prefix if present for OpenWrt Makefile)
-          CLEAN_VER=${LATEST_TAG#v}
-          
-          # Export variables for next steps
           echo "version=$CLEAN_VER" >> $GITHUB_OUTPUT
           echo "commit=$COMMIT_HASH" >> $GITHUB_OUTPUT
           echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
@@ -86,13 +67,32 @@ jobs:
         run: |
           echo "Downloading SDK..."
           wget -O sdk.tar.zst "$SDK_URL"
-          
           mkdir sdk
-          # Extract using zstd
           tar -I zstd -xf sdk.tar.zst -C sdk --strip-components=1
           
           cd sdk
+          # 1. Update the basic feeds first
           ./scripts/feeds update -a
+
+      # --- NEW STEP: FORCE UPDATE GOLANG ---
+      - name: Upgrade Golang to Latest (Master)
+        working-directory: sdk
+        run: |
+          echo "Replacing stable Golang with Master (Snapshot) version..."
+          
+          # Remove the old golang definition from the stable feed
+          rm -rf feeds/packages/lang/golang
+          
+          # Clone the latest packages repo (shallow clone for speed)
+          git clone https://github.com/openwrt/packages.git --depth 1 -b master temp_packages
+          
+          # Copy the fresh golang definition into our feed
+          cp -r temp_packages/lang/golang feeds/packages/lang/
+          
+          # Clean up
+          rm -rf temp_packages
+          
+          # Re-install the feeds so the SDK picks up the new Golang
           ./scripts/feeds install -a
 
       - name: Configure Package with New Version
@@ -102,37 +102,23 @@ jobs:
         run: |
           cd sdk
           
-          # We locate the existing xray-core package in the feeds
-          # Usually at feeds/packages/net/xray-core
           PKG_PATH=$(find feeds/packages -name xray-core -type d | head -n 1)
           echo "Found existing package at: $PKG_PATH"
           
-          # We modify the Makefile to use our specific VERSION and COMMIT
-          # This forces the SDK to fetch the specific commit we identified
           sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VER/" $PKG_PATH/Makefile
           sed -i "s/^PKG_SOURCE_VERSION:=.*/PKG_SOURCE_VERSION:=$HASH/" $PKG_PATH/Makefile
-          
-          # Reset revision number to 1
           sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=1/" $PKG_PATH/Makefile
-          
-          # IMPORTANT: Xray-core uses Go. We need to clear old hash checks because 
-          # changing the commit changes the source hash.
-          # We define PKG_MIRROR_HASH as "skip" to bypass hash check during dev builds
           sed -i "s/^PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=skip/" $PKG_PATH/Makefile
           
-          # Install the modified package
           ./scripts/feeds install -a
 
       - name: Compile Xray-core
         working-directory: sdk
         run: |
-          # 1. Select the package
           make defconfig
-          # 2. Compile only xray-core (ignore errors from other packages)
-          # 'V=s' gives verbose output for debugging
+          # Compile xray-core. This will now trigger building the NEW Go toolchain first.
           make package/xray-core/compile -j$(nproc) V=s || true
           
-          # 3. Verify the file exists
           find bin/packages -name "xray-core*.ipk"
 
       - name: Prepare Artifacts
@@ -147,15 +133,14 @@ jobs:
           echo "## Xray-core OpenWrt Build" > release_notes.md
           echo "- **Upstream Version:** ${{ steps.xray_info.outputs.tag }}" >> release_notes.md
           echo "- **Commit:** ${{ steps.xray_info.outputs.commit }}" >> release_notes.md
-          echo "- **Target:** ${{ env.TARGET_ARCH }}" >> release_notes.md
+          echo "- **SDK Version:** 24.10.5" >> release_notes.md
+          echo "- **Note:** Built using latest Golang from OpenWrt Master." >> release_notes.md
           echo "- **Built Date:** $(date)" >> release_notes.md
 
       - name: Upload Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.xray_info.outputs.tag }}-openwrt
-          name: Xray-core ${{ steps.xray_info.outputs.tag }} (OpenWrt 24.10)
+          name: Xray-core ${{ steps.xray_info.outputs.tag }} (OpenWrt 24.10.5)
           body_path: release_notes.md
           files: output/*.ipk
-          draft: false
-          prerelease: false
