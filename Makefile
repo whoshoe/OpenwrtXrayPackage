@@ -55,6 +55,7 @@ define Build/Patch
 endef
 
 define Build/Compile
+	sed -i 's/^go .*/go 1.21/' $(PKG_BUILD_DIR)/go.mod
 	cd $(PKG_BUILD_DIR); $(GO_PKG_VARS) $(USE_GOPROXY) CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o $(PKG_INSTALL_DIR)/bin/xray ./main; 
 endef
 
