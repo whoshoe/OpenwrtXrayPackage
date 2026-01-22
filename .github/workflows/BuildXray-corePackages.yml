@@ -85,12 +85,13 @@ jobs:
       - name: Setup OpenWrt SDK
         run: |
           echo "Downloading SDK..."
-          wget -O sdk.tar.xz "$SDK_URL"
+          wget -O sdk.tar.zst "$SDK_URL"
+          
           mkdir sdk
+          # Extract using zstd
           tar -I zstd -xf sdk.tar.zst -C sdk --strip-components=1
           
           cd sdk
-          # Update feeds to get the base compilation tools and existing xray definition
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
