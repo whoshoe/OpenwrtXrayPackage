@@ -1,146 +1,199 @@
-name: Build Xray-core for OpenWrt 24.10
+name: Build and Release
 
 on:
+  push:
+    tags:
+      - '*'
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 0'
 
 env:
-  SDK_URL: "https://downloads.openwrt.org/releases/24.10.5/targets/x86/64/openwrt-sdk-24.10.5-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-  TARGET_ARCH: "x86_64"
-  UPSTREAM_REPO: "XTLS/Xray-core"
-
-permissions:
-  contents: write
+  PACKAGE_NAME: xray-core
+  CACHE_DIR: ~/cache
 
 jobs:
-  build:
+  release:
+    name: Build for ${{ matrix.arch }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64_cortex-a53
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm27xx/bcm2710
+            sdk_name: -sdk-23.05.5-bcm27xx-bcm2710_
+          - arch: aarch64_cortex-a72
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/mvebu/cortexa72
+            sdk_name: -sdk-23.05.5-mvebu-cortexa72_
+          - arch: aarch64_generic
+            sdk_url_path: http://downloads.openwrt.org/releases/23.05.5/targets/layerscape/armv8_64b
+            sdk_name: -sdk-23.05.5-layerscape-armv8_64b_
+          - arch: arm_arm1176jzf-s_vfp
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm27xx/bcm2708
+            sdk_name: -sdk-23.05.5-bcm27xx-bcm2708_
+          - arch: arm_cortex-a15_neon-vfpv4
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/ipq806x/generic
+            sdk_name: -sdk-23.05.5-ipq806x-generic_
+          - arch: arm_cortex-a5-vfpv4
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/at91/sama5
+            sdk_name: -sdk-23.05.5-at91-sama5_
+          - arch: arm_cortex-a7_neon-vfpv4
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm27xx/bcm2709
+            sdk_name: -sdk-23.05.5-bcm27xx-bcm2709_
+          - arch: arm_cortex-a8_vfpv3
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/sunxi/cortexa8
+            sdk_name: -sdk-23.05.5-sunxi-cortexa8_
+          - arch: arm_cortex-a9
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm53xx/generic
+            sdk_name: -sdk-23.05.5-bcm53xx-generic_
+          - arch: arm_cortex-a9_vfpv3-d16
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/mvebu/cortexa9
+            sdk_name: -sdk-23.05.5-mvebu-cortexa9_
+          - arch: arm_mpcore
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/oxnas/ox820
+            sdk_name: -sdk-23.05.5-oxnas-ox820_
+          - arch: i386_pentium
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/x86/legacy
+            sdk_name: -sdk-23.05.5-x86-legacy_
+          - arch: i386_pentium4
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/x86/generic
+            sdk_name: -sdk-23.05.5-x86-generic_
+          - arch: mipsel_24kc
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7620
+            sdk_name: -sdk-23.05.5-ramips-mt7620_
+          - arch: mipsel_74kc
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm47xx/mips74k
+            sdk_name: -sdk-23.05.5-bcm47xx-mips74k_
+          - arch: mipsel_mips32
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm47xx/generic
+            sdk_name: -sdk-23.05.5-bcm47xx-generic_
+          - arch: mips_24kc
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/ath79/generic
+            sdk_name: -sdk-23.05.5-ath79-generic_
+          - arch: mips_mips32
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/bcm63xx/generic
+            sdk_name: -sdk-23.05.5-bcm63xx-generic_
+          - arch: x86_64
+            sdk_url_path: https://downloads.openwrt.org/releases/23.05.5/targets/x86/64
+            sdk_name: -sdk-23.05.5-x86-64_
+
+    env:
+      SDK_URL_PATH: ${{ matrix.sdk_url_path }}
+      SDK_NAME: ${{ matrix.sdk_name }}
+      CCACHE_DIR: ~/.ccache
+      CONFIG_CCACHE: y
     steps:
-      - name: Checkout Helper
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v2
 
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
-          zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 file
+      - name: Prepare Cache Key
+        id: cache_key
+        run: echo "::set-output name=timestamp::$(date +"%s")"
 
-      # --- LOGIC STEP 1: Find Version & Checkout Code ---
-      - name: Resolve Latest Xray Version
-        id: xray_info
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Setup Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CACHE_DIR }}
+            ${{ env.CCACHE_DIR }}
+          key: openwrt-${{ matrix.arch }}-${{ env.PACKAGE_NAME }}-${{ steps.cache_key.outputs.timestamp }}
+          restore-keys: |
+            openwrt-${{ matrix.arch }}-${{ env.PACKAGE_NAME }}-
+      - name: Update Dependencies
         run: |
-          echo "Fetching latest release from $UPSTREAM_REPO..."
-          
-          LATEST_TAG=$(gh release list \
-            --repo $UPSTREAM_REPO \
-            --exclude-drafts \
-            --exclude-pre-releases \
-            --limit 1 \
-            --json tagName \
-            --jq '.[0].tagName')
-          
-          if [ -z "$LATEST_TAG" ]; then
-            echo "Error: Could not find a valid tag."
+          DEBIAN_FRONTEND=noninteractive sudo apt-get update
+      - name: Install Dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y ccache gettext libncurses5-dev xsltproc
+      - name: Create Directories
+        run: |
+          CACHE_DIR_SDK="$(eval echo "$CACHE_DIR/sdk")"
+          CACHE_DIR_DL="$(eval echo "$CACHE_DIR/dl")"
+          CACHE_DIR_FEEDS="$(eval echo "$CACHE_DIR/feeds")"
+          echo "CACHE_DIR_SDK: $CACHE_DIR_SDK"
+          echo "CACHE_DIR_DL: $CACHE_DIR_DL"
+          echo "CACHE_DIR_FEEDS: $CACHE_DIR_FEEDS"
+          test -d "$CACHE_DIR_SDK" || mkdir -p "$CACHE_DIR_SDK"
+          test -d "$CACHE_DIR_DL" || mkdir -p "$CACHE_DIR_DL"
+          test -d "$CACHE_DIR_FEEDS" || mkdir -p "$CACHE_DIR_FEEDS"
+          echo "CACHE_DIR_SDK=$CACHE_DIR_SDK" >> $GITHUB_ENV
+          echo "CACHE_DIR_DL=$CACHE_DIR_DL" >> $GITHUB_ENV
+          echo "CACHE_DIR_FEEDS=$CACHE_DIR_FEEDS" >> $GITHUB_ENV
+          echo "SDK_HOME=$(mktemp -d)" >> $GITHUB_ENV
+      - name: Download and Unzip SDK
+        run: |
+          cd "$CACHE_DIR_SDK"
+          if ! ( wget -q -O - "$SDK_URL_PATH/sha256sums" | grep -- "$SDK_NAME" > sha256sums.small 2>/dev/null ) ; then
+            echo "::error::Can not find ${SDK_NAME} file in sha256sums."
             exit 1
           fi
-
-          echo "Latest Tag found: $LATEST_TAG"
-          
-          git clone https://github.com/$UPSTREAM_REPO.git upstream-src
-          cd upstream-src
-          git checkout $LATEST_TAG
-          
-          COMMIT_HASH=$(git rev-parse HEAD)
-          echo "Commit Hash: $COMMIT_HASH"
-          
-          CLEAN_VER=${LATEST_TAG#v}
-          
-          echo "version=$CLEAN_VER" >> $GITHUB_OUTPUT
-          echo "commit=$COMMIT_HASH" >> $GITHUB_OUTPUT
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-
-      # --- LOGIC STEP 2: Setup SDK & Build ---
-      - name: Setup OpenWrt SDK
-        run: |
-          echo "Downloading SDK..."
-          wget -O sdk.tar.zst "$SDK_URL"
-          mkdir sdk
-          tar -I zstd -xf sdk.tar.zst -C sdk --strip-components=1
-          
-          cd sdk
-          # 1. Update the basic feeds first
-          ./scripts/feeds update -a
-
-      # --- NEW STEP: FORCE UPDATE GOLANG ---
-      - name: Upgrade Golang to Latest (Master)
-        working-directory: sdk
-        run: |
-          echo "Replacing stable Golang with Master (Snapshot) version..."
-          
-          # Remove the old golang definition from the stable feed
-          rm -rf feeds/packages/lang/golang
-          
-          # Clone the latest packages repo (shallow clone for speed)
-          git clone https://github.com/openwrt/packages.git --depth 1 -b master temp_packages
-          
-          # Copy the fresh golang definition into our feed
-          cp -r temp_packages/lang/golang feeds/packages/lang/
-          
-          # Clean up
-          rm -rf temp_packages
-          
-          # Re-install the feeds so the SDK picks up the new Golang
-          ./scripts/feeds install -a
-
-      - name: Configure Package with New Version
+          SDK_FILE="$(cat sha256sums.small | cut -d' ' -f2 | sed 's/*//g')"
+          if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
+            wget -q -O "$SDK_FILE" "$SDK_URL_PATH/$SDK_FILE"
+            if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
+              echo "::error::SDK can not be verified!"
+              exit 1
+            fi
+          fi
+          cd -
+          file "$CACHE_DIR_SDK/$SDK_FILE"
+          tar -Jxf "$CACHE_DIR_SDK/$SDK_FILE" -C "$SDK_HOME" --strip=1
+          cd "$SDK_HOME"
+          test -d "dl" && rm -rf "dl" || true
+          test -d "feeds" && rm -rf "feeds" || true
+          ln -s "$CACHE_DIR_DL" "dl"
+          ln -s "$CACHE_DIR_FEEDS" "feeds"
+          cp feeds.conf.default feeds.conf
+          sed -i 's#git.openwrt.org/openwrt/openwrt#github.com/openwrt/openwrt#' feeds.conf
+          sed -i 's#git.openwrt.org/feed/packages#github.com/openwrt/packages#' feeds.conf
+          sed -i 's#git.openwrt.org/project/luci#github.com/openwrt/luci#' feeds.conf
+          sed -i 's#git.openwrt.org/feed/telephony#github.com/openwrt/telephony#' feeds.conf
+          cd -
+      - name: Update and Install Packages
         env:
-          VER: ${{ steps.xray_info.outputs.version }}
-          HASH: ${{ steps.xray_info.outputs.commit }}
+          OPENWRT_GOLANG_COMMIT: ${{ secrets.OPENWRT_GOLANG_COMMIT }}
         run: |
-          cd sdk
-          
-          PKG_PATH=$(find feeds/packages -name xray-core -type d | head -n 1)
-          echo "Found existing package at: $PKG_PATH"
-          
-          sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VER/" $PKG_PATH/Makefile
-          sed -i "s/^PKG_SOURCE_VERSION:=.*/PKG_SOURCE_VERSION:=$HASH/" $PKG_PATH/Makefile
-          sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=1/" $PKG_PATH/Makefile
-          sed -i "s/^PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=skip/" $PKG_PATH/Makefile
-          
+          cd "$SDK_HOME"
+          ./scripts/feeds update -a
+          test -d "feeds/packages/net/$PACKAGE_NAME" && rm -rf "feeds/packages/net/$PACKAGE_NAME" || true
+          test -d "feeds/packages/lang/golang" && rm -rf "feeds/packages/lang/golang" || true
+          curl https://codeload.github.com/openwrt/packages/tar.gz/${OPENWRT_GOLANG_COMMIT:-master} | tar -xz -C "feeds/packages/lang" --strip=2 packages-${OPENWRT_GOLANG_COMMIT:-master}/lang/golang
+          ln -s "${{ github.workspace }}" "package/$PACKAGE_NAME"
           ./scripts/feeds install -a
-
-      - name: Compile Xray-core
-        working-directory: sdk
+          cd -
+      - name: Build Packages
         run: |
+          cd "$SDK_HOME"
           make defconfig
-          # Compile xray-core. This will now trigger building the NEW Go toolchain first.
-          make package/xray-core/compile -j$(nproc) V=s || true
-          
-          find bin/packages -name "xray-core*.ipk"
-
-      - name: Prepare Artifacts
+          make package/${PACKAGE_NAME}/{clean,compile} V=s
+          find "$SDK_HOME/bin/" -type f -name "*.ipk" -exec ls -lh {} \;
+          cd -
+      - name: Copy Bin Files
         run: |
-          mkdir -p output
-          find sdk/bin/packages -name "xray-core*.ipk" -exec cp {} output/ \;
-          ls -l output/
-
-      # --- LOGIC STEP 3: Upload to Release ---
-      - name: Generate Release Notes
-        run: |
-          echo "## Xray-core OpenWrt Build" > release_notes.md
-          echo "- **Upstream Version:** ${{ steps.xray_info.outputs.tag }}" >> release_notes.md
-          echo "- **Commit:** ${{ steps.xray_info.outputs.commit }}" >> release_notes.md
-          echo "- **SDK Version:** 24.10.5" >> release_notes.md
-          echo "- **Note:** Built using latest Golang from OpenWrt Master." >> release_notes.md
-          echo "- **Built Date:** $(date)" >> release_notes.md
-
-      - name: Upload Release
+          find "$SDK_HOME/bin/" -type f -name "*xray*.ipk" -exec cp {} "${{ github.workspace }}" \;
+          find "${{ github.workspace }}" -type f -name "*.ipk" -exec ls -lh {} \;
+      - name: Release and Upload Assets
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.xray_info.outputs.tag }}-openwrt
-          name: Xray-core ${{ steps.xray_info.outputs.tag }} (OpenWrt 24.10.5)
-          body_path: release_notes.md
-          files: output/*.ipk
+          files: '*.ipk'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify:
+    name: Notify Release Publish
+    runs-on: ubuntu-latest
+    env:
+      TRIGGER_URL: ${{ secrets.TRIGGER_URL }}
+      TRIGGER_TOKEN: ${{ secrets.TRIGGER_TOKEN }}
+    needs: release
+    steps:
+      - name: Notify Jenkins
+        run: |
+          if [ -z "$TRIGGER_URL" ] ; then
+            echo "::warning::No trigger url found, skip..."
+            exit 0
+          fi
+          curl -X POST \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -H "Authorization: Bearer $TRIGGER_TOKEN" \
+              -d "{\"event\":\"release\",\"repository\":\"${{ github.repository }}\",\"ref\":\"${{ github.ref }}\"}" \
+              "$TRIGGER_URL" || true
