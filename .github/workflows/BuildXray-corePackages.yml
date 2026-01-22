@@ -7,7 +7,7 @@ on:
 
 env:
   # OpenWrt Configuration
-  SDK_URL: "https://downloads.openwrt.org/releases/24.10.0/targets/x86/64/openwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+  SDK_URL: "https://downloads.openwrt.org/releases/24.10.5/targets/x86/64/openwrt-sdk-24.10.5-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
   TARGET_ARCH: "x86_64" # Change this to match the SDK URL architecture (e.g., aarch64_generic)
   
   # Upstream Repo
@@ -87,7 +87,7 @@ jobs:
           echo "Downloading SDK..."
           wget -O sdk.tar.xz "$SDK_URL"
           mkdir sdk
-          tar -xJf sdk.tar.xz -C sdk --strip-components=1
+          tar -I zstd -xf sdk.tar.zst -C sdk --strip-components=1
           
           cd sdk
           # Update feeds to get the base compilation tools and existing xray definition
