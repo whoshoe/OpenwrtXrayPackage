@@ -31,10 +31,38 @@ jobs:
         run: |
           echo "Fetching latest release from $UPSTREAM_REPO..."
           
-          # 1. Find latest release tag (excluding pre-releases)
-          LATEST_TAG=$(gh release list --repo $UPSTREAM_REPO --exclude-drafts --exclude-pre-releases --limit 1 | awk '{print $1}')
+          # FIXED COMMAND: Use JSON to get the strict tag name
+          LATEST_TAG=$(gh release list \
+            --repo $UPSTREAM_REPO \
+            --exclude-drafts \
+            --exclude-pre-releases \
+            --limit 1 \
+            --json tagName \
+            --jq '.[0].tagName')
           
+          if [ -z "$LATEST_TAG" ]; then
+            echo "Error: Could not find a valid tag."
+            exit 1
+          fi
+
           echo "Latest Tag found: $LATEST_TAG"
+          
+          # 2. Clone and checkout specifically to find the commit hash
+          git clone https://github.com/$UPSTREAM_REPO.git upstream-src
+          cd upstream-src
+          git checkout $LATEST_TAG
+          
+          # 3. Get the commit hash
+          COMMIT_HASH=$(git rev-parse HEAD)
+          echo "Commit Hash: $COMMIT_HASH"
+          
+          # Clean version (remove 'v' prefix if present for OpenWrt Makefile)
+          CLEAN_VER=${LATEST_TAG#v}
+          
+          # Export variables for next steps
+          echo "version=$CLEAN_VER" >> $GITHUB_OUTPUT
+          echo "commit=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
           
           # 2. Clone and checkout specifically to find the commit hash (as requested)
           git clone https://github.com/$UPSTREAM_REPO.git upstream-src
