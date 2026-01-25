@@ -14,7 +14,10 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
+        with:
+            token: ${{ secrets.ACTIONS_PAT }} # Use PAT token
+            fetch-depth: 0
+    
       - name: Check for Updates and Trigger Build
         run: |
           # 1. Fetch the latest tag from upstream (XTLS/Xray-core)
